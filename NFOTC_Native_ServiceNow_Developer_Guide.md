@@ -349,6 +349,50 @@ Look for `Initials = AM` in the output. *(No Background Scripts access? That's n
 
 ---
 
+### D12 — Client-side behaviour: Client Scripts, UI Policies & calling the server (GlideAjax)
+**What it is:** code/rules that run **in the browser on a form** — react when a field changes, or show/hide/require fields.
+- **UI Policy** (no code): make a field mandatory / hidden / read-only based on a condition. Studio → **UI Policy** → pick table + condition + actions.
+- **Client Script** (code): run on a form's **onLoad / onChange / onSubmit**. Studio → **Client Script**.
+- **GlideAjax** (client → server): the browser **cannot** use `GlideRecord`, so to fetch server data from a client script you call a **Script Include marked "Client callable"** via **GlideAjax**.
+> **For OUR screens, note the difference:** the NFOTC screens are **Service Portal widgets** (their own **client controller + server script**, see D1) — *not* classic form Client Scripts. Use the widget pattern for our case screen / boards. Client Scripts + UI Policies apply to **standard record forms** (e.g. if you build a form on a table).
+
+### D13 — Integrations: REST Messages & the MID Server
+**What it is:** how the app talks to systems **outside** ServiceNow.
+- **REST Message** = a saved outbound HTTP call (endpoint + method + auth). Studio → **REST Message**.
+- **MID Server** = a small agent installed on the customer's network so ServiceNow can reach **private/internal** systems.
+- **In our app:** the connection to **Chinou** is a REST Message routed through a **MID Server** (the `ChinouClient` helper). That's how the AI reaches Nomura's internal gateway.
+> **Mostly release-owner/admin territory** — you probably won't add integrations day-to-day. **Two known traps:** (1) a scoped **before/after business rule can't call the internet** — use async; (2) a connection's "Use MID Server" is **ignored in background/flows** — you must pin the MID on the REST Message function (that's why `ChinouClient` exists).
+
+### D14 — Notifications & Scheduled Jobs
+- **Notifications** (email/alerts when something happens): Studio → **Notification** (or **System Notification → Email → Notifications**) → choose the table + trigger (record inserted/updated) + condition + who to notify + the message.
+- **Scheduled Jobs** (run code on a timer — e.g. nightly): filter → **Scheduled Script Executions** (or Studio → **Scheduled Job**) → set the schedule + the script (which can call your Script Includes).
+- **Events** (advanced): fire a named event from code, handle it asynchronously — used for decoupled/background work.
+
+### D15 — Create a NEW Chinou-backed AI skill from scratch *(advanced)*
+**What it is:** a new AI instruction (e.g. "summarise this email", "extract a new field") that runs on **Chinou**.
+1. Filter → **Now Assist Skill Kit** → scope = **Names and Forms OTC Dev** → **New skill**.
+2. **Provider = Custom LLM** (this is Chinou) · **Model** = `anthropic-5-sonnet[Bedrock]` ("Chinou · Claude Sonnet 5"). **Never** pick "Now LLM Generic" (policy).
+3. Write the **prompt template** with placeholders, e.g. `INSTRUCTION: {{instruction}}  TEXT: {{content}}  OUTPUT:` and define **inputs** (instruction, content) + **outputs**.
+4. **Save → Activate/Publish.**
+5. **Call it** from a Script Include via OneExtend — *or*, per our "run without Now Assist" direction, call Chinou directly with `new global.ChinouClient().invoke(prompt)`.
+> The **Chinou provider/model** already exists (set up once, instance-side) — you just reuse it for the new skill. Creating that provider is a one-time admin task, not per-skill. Flag this one as advanced; copy the existing "Extract Fields Generic Chinou" skill as your template.
+
+### D16 — BIG worked example: onboard a **new work-driver** end-to-end (mostly no code)
+This is the signature NFOTC task — a **manager** configures a new pipeline through the **Wizard Builder**, and it gets its **own board** automatically. No code needed for a standard work-driver.
+1. Open the **Manager Dashboard** → **New wizard** (or the **Wizard Builder** page).
+2. **Define:** name + the taxonomy (BU → Sub-BU → Service → **Work Driver** → **Activity**). *(Work Driver, name, and Activity are mandatory.)*
+3. **Input source:** choose **Mail** → pick a mailbox → set **Email-Identification rules** (keywords / sender / subject that identify *this* driver's emails). **⚠ At least one rule is required**, or it would grab every email.
+4. **Fields:** pick the fields to extract; for each, write its **AI Prompt** (with 2–3 grounded examples) and mark **mandatory** where needed.
+5. **Target & mapping:** map each extracted field to the target-system field it should populate.
+6. **Matching tolerances** (step 5 of the wizard): set amount/value-date tolerances (or leave blank to inherit defaults).
+7. **Review** the summary → **Run / validate** on the first email to see a field-by-field result before publishing.
+8. **Publish** → **assign** the wizard to one or more analysts.
+9. The published wizard now has its **own board** (`/nfotcdev?id=dev_nfotc_wiz_dash&wiz=<id>`); assigned analysts see it on their landing page.
+10. Drop matching `.eml` files into the Mailbox Drop → **Sync** → the new driver extracts, matches, and shows cases — using the **same engine**, just your new config.
+> This is the "reusable capability, configured per work-driver" model in action: **a whole new pipeline with zero code.** Only add code (D1–D15) when a driver needs behaviour the wizard can't express.
+
+---
+
 # PART E — The AI (Chinou), in plain terms
 
 - **Chinou** is Nomura's approved gateway to the Claude AI. In this app, the AI never talks to the public internet directly — everything routes through Chinou.
@@ -385,7 +429,41 @@ Look for `Initials = AM` in the output. *(No Background Scripts access? That's n
 
 ---
 
-# PART H — Glossary (every term, plain English)
+# PART H — Debugging & troubleshooting (when something breaks)
+
+**The 5 places to look:**
+1. **System Log** — filter → **System Log → All** (or **Application Logs**): server errors + anything you print with `gs.info()`. **First place to check for backend issues.**
+2. **Browser console** — press **F12 → Console**: widget/screen JavaScript errors. **First place for UI issues.**
+3. **Background Scripts** (if you have access) — run a code snippet and see the output; great for testing a Script Include fast.
+4. **Script Debugger** (advanced) — set breakpoints and step through server code.
+5. **The audit trail** — our append-only audit shows exactly what happened to each cashflow; a built-in debugging aid.
+
+**How to add your own logging:**
+- Server code: `gs.info('here: ' + value);` (or `gs.error(...)`) → appears in **System Log**.
+- Widget client script: `console.log('here', value);` → appears in the **browser console**.
+
+**Common symptom → likely cause:**
+| Symptom | Likely cause |
+|---|---|
+| Screen goes **blank** after your edit | broken widget HTML — an unescaped `&&`/`<`, or a typo. Undo, redo smaller. |
+| **"Sync = 0"** / finds nothing | the `addQuery('field','!=',x)` NULL-exclusion trap, or a work-driver with no id_rule |
+| AI extraction **empty/fails** | the NASK skill isn't **Activated**, or the mail genuinely has no parseable data (correct behaviour) |
+| A **Save "reverts"** | a permission gate — only the *assigned analyst* can act; check roles/assignment |
+| **"Unauthorized"** on an SDK/admin action | login token expired — retry |
+
+---
+
+# PART I — Testing (ATF)
+
+- **What ATF is:** the **Automated Test Framework** — tests that run *inside* the instance (create a record, check a field, click a button, assert the result). Our app already ships **4 ATF tests** (matching, append-only audit, routing, capability chain).
+- **Where:** filter → **Automated Test Framework → Tests** (and **Test Suites**).
+- **How to run:** enable the property `sn_atf.runner.enabled`; UI tests also open a browser client runner.
+- **How to build one:** **New Test** → add **Steps** (e.g. *Insert a record*, *Field values match*, *Run server-side script*) → Save → **Run**.
+- **For a POC** it's optional, but it's how you'd prove "the pipeline still works after my change" before promoting anything risky.
+
+---
+
+# PART J — Glossary (every term, plain English)
 
 - **Instance** — our specific ServiceNow website (`nomuraevalinstancegenaipov…`).
 - **Application** — a folder grouping all parts of one tool (our app: NFOTC).
@@ -406,10 +484,19 @@ Look for `Initials = AM` in the output. *(No Background Scripts access? That's n
 - **MID Server** — a small agent that lets ServiceNow reach Nomura's internal network (needed for Chinou).
 - **Studio / Flow Designer / Skill Kit** — the browser tools you build in.
 - **Cashflow** — one extracted trade row. **Booking** — a row in the bank's golden source (PCM). **Match** — linking a cashflow to its booking.
+- **Client Script** — code that runs in the browser on a record **form** (onLoad/onChange/onSubmit).
+- **UI Policy** — a no-code rule that shows/hides/requires form fields based on a condition.
+- **GlideAjax** — the way a client (browser) script calls a server Script Include to fetch data.
+- **REST Message** — a saved outbound HTTP call to a system outside ServiceNow (our Chinou connection is one).
+- **Notification** — an automatic email/alert triggered by a record event.
+- **Scheduled Job** — code set to run on a timer (e.g. nightly).
+- **Event** — a named signal fired from code and handled asynchronously (decoupled/background work).
+- **ATF (Automated Test Framework)** — build-and-run tests inside the instance to check the app still works.
+- **OneExtend** — the Now Assist engine that runs a NASK skill (the wrapper around the AI call).
 
 ---
 
-# PART I — When you're stuck
+# PART K — When you're stuck
 
 1. **Re-read the relevant recipe** in Part D and the term in the **Glossary**.
 2. **Look at an existing example** — the app already does what you're trying to do somewhere. Open a similar Script Include / widget / flow and copy the pattern.
