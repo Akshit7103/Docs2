@@ -104,21 +104,20 @@
     // avoids the cross-scope role-table reads that a scoped user session blocks. To add a new analyst:
     // add their user_name to x_nose_nfotc_bsm.demo_users (and grant them the analyst role).
     data.users = [];
-    var _demoSet = {};
-    var _demo = ('' + (gs.getProperty('x_nose_nfotc_bsm.demo_users', '') || '')).split(',');
-    for (var _d = 0; _d < _demo.length; _d++) { var _k = ('' + _demo[_d]).trim().toLowerCase(); if (_k) { _demoSet[_k] = true; } }
-    var ug = new GlideRecord('sys_user');
-    ug.addActiveQuery();
-    ug.addNotNullQuery('email');
-    ug.orderBy('name');
-    ug.setLimit(2000);
-    ug.query();
-    while (ug.next()) {
-        var _un = ('' + (ug.getValue('user_name') || '')).toLowerCase();
-        if (!_demoSet[_un]) { continue; }                        // only provisioned operators (demo_users)
-        var unm = ug.getValue('name') || ug.getValue('email');   // fall back to email if no display name
-        if (!unm) { continue; }
-        data.users.push({ id: ug.getUniqueValue(), name: unm, email: (ug.getValue('email') || '') });
+    var _demo = ('' + (gs.getProperty('x_nose_nfotc_bsm.demo_users', '') || ''))
+        .split(',').map(function (s) { return ('' + s).trim(); }).filter(function (s) { return s; });
+    if (_demo.length) {
+        // Targeted lookup by user_name — NOT a fetch-everything-then-filter. bsmdev's directory has
+        // thousands of users (many with a blank name that sort first), so a row-limited scan would push
+        // the real operators past the cap. Querying the exact user_names returns just them.
+        var ug = new GlideRecord('sys_user');
+        ug.addQuery('user_name', 'IN', _demo.join(','));
+        ug.addActiveQuery();
+        ug.query();
+        while (ug.next()) {
+            var unm = ug.getValue('name') || ug.getValue('email') || ug.getValue('user_name');
+            data.users.push({ id: ug.getUniqueValue(), name: unm, email: (ug.getValue('email') || '') });
+        }
     }
 
     function fieldCount(json) {
