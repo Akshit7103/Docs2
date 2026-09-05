@@ -1,0 +1,175 @@
+/**
+ * Work Driver Onboarding Wizard — LIST page (server).
+ * Lists configured wizards split into Published / Drafts, with filter option lists and the
+ * "copy an existing wizard" source list for the create modal. Delete happens here too.
+ *
+ * Access is gated by ROLE on the landing page (manager/admin only), so there is no separate
+ * password gate on this page.
+ */
+(function () {
+    function hasExplicitRole(roleName) {
+        try {
+            var roles = gs.getUser().getRoles();
+            if (!roles) { return false; }
+            for (var i = 0; i < roles.length; i++) { if (('' + roles[i]) === roleName) { return true; } }
+        } catch (e) { /* fall through */ }
+        return false;
+    }
+    var cm = new x_nose_nfotc_bsm.CompareMatch();
+    data.logo = cm.LOGO;
+    data.name = cm.titleCase(gs.getUserDisplayName() || 'Analyst');
+    data.isAdmin = gs.hasRole('admin');
+
+    // Option catalogs for the per-card Settings panel (edit the wizard record's config fields inline).
+    data.cat = {
+        taxonomy: cm.taxonomy(),
+        inputFormats: ['Email', 'PDF', 'Excel'],
+        ingestionTypes: ['Mail', 'API', 'File Drop', 'Manual'],
+        frequencies: ['Real-time', 'Hourly', 'Daily'],
+        targetSystems: ['System 1', 'System 2', 'PCM']
+    };
+    data.isManager = hasExplicitRole('x_nose_nfotc_bsm.manager');
+    data.role = new x_nose_nfotc_bsm.AccessGuard().roleLabel();
+    var wlp = ('' + data.name).trim().split(/\s+/);
+    data.initials = ((wlp[0] || 'U').charAt(0) + (wlp.length > 1 ? wlp[wlp.length - 1].charAt(0) : '')).toUpperCase();
+
+    // Delete a wizard (trash icon on a card).
+    if (input && input.action === 'delete' && input.wizardId) {
+        var dg = new GlideRecord('x_nose_nfotc_bsm_wizard');
+        if (dg.get(input.wizardId)) { dg.deleteRecord(); }
+    }
+
+    // Settings (gear icon on a card): edit the wizard record's configuration fields inline and write them
+    // straight back to x_nose_nfotc_bsm_wizard — the same fields shown on the native record form.
+    if (input && input.action === 'save_config' && input.wizardId && input.cfg) {
+        var cfgIn = {};
+        try { cfgIn = JSON.parse(input.cfg); } catch (ec) { cfgIn = {}; }
+        var cg = new GlideRecord('x_nose_nfotc_bsm_wizard');
+        if (cg.get(input.wizardId)) {
+            var FMAP = {
+                description: 'description', bu: 'bu', subBu: 'sub_bu', service: 'service', activity: 'activity',
+                workDriver: 'work_driver', mailbox: 'mailbox', inputFormat: 'input_format',
+                ingestionType: 'ingestion_type', frequency: 'frequency', target: 'target_system', version: 'version'
+            };
+            for (var mk in FMAP) {
+                if (Object.prototype.hasOwnProperty.call(cfgIn, mk)) { cg.setValue(FMAP[mk], '' + (cfgIn[mk] == null ? '' : cfgIn[mk])); }
+            }
+            cg.update();
+            data.configSaved = input.wizardId;
+            // (Wizard configuration is intentionally NOT written to the cashflow audit trail.)
+        }
+    }
+
+    // Assign a published workflow to real people: store the list on the wizard AND grant them the
+    // analyst role (best-effort) so they can actually run it.
+    if (input && input.action === 'assign' && input.wizardId) {
+        var wg2 = new GlideRecord('x_nose_nfotc_bsm_wizard');
+        if (wg2.get(input.wizardId)) {
+            var ids = ('' + (input.userIds || '')).split(',');
+            var analystRoleId = '';
+            var rr = new GlideRecord('sys_user_role');
+            if (rr.get('name', 'x_nose_nfotc_bsm.analyst')) { analystRoleId = rr.getUniqueValue(); }
+            var list = [];
+            for (var ai = 0; ai < ids.length; ai++) {
+                var uid = ids[ai];
+                if (!uid) { continue; }
+                var ug2 = new GlideRecord('sys_user');
+                if (!ug2.get(uid)) { continue; }
+                list.push({ id: uid, name: ug2.getValue('name') || ug2.getValue('email') });
+                if (analystRoleId) {
+                    try {
+                        var chk = new GlideRecord('sys_user_has_role');
+                        chk.addQuery('user', uid);
+                        chk.addQuery('role', analystRoleId);
+                        chk.query();
+                        if (!chk.hasNext()) {
+                            var ins = new GlideRecord('sys_user_has_role');
+                            ins.initialize();
+                            ins.setValue('user', uid);
+                            ins.setValue('role', analystRoleId);
+                            ins.insert();
+                        }
+                    } catch (e) { /* role grant best-effort (may be restricted) */ }
+                }
+            }
+            wg2.setValue('assigned_users', JSON.stringify(list));
+            wg2.setValue('assigned_count', list.length);
+            wg2.update();
+        }
+    }
+
+    // Assignable people — ONLY users who hold this app's roles (analyst / manager), so the picker shows
+    // provisioned staff instead of the whole directory. To onboard a NEW analyst: grant them the
+    // x_nose_nfotc_bsm.analyst role (User Administration), then they appear here.
+    data.users = [];
+    var _roleIds = [];
+    var _rr = new GlideRecord('sys_user_role');
+    _rr.addQuery('name', 'IN', 'x_nose_nfotc_bsm.analyst,x_nose_nfotc_bsm.manager');
+    _rr.query();
+    while (_rr.next()) { _roleIds.push(_rr.getUniqueValue()); }
+    var _allowed = {};
+    if (_roleIds.length) {
+        var _uhr = new GlideRecord('sys_user_has_role');
+        _uhr.addQuery('role', 'IN', _roleIds.join(','));
+        _uhr.query();
+        while (_uhr.next()) { _allowed[_uhr.getValue('user')] = true; }
+    }
+    var ug = new GlideRecord('sys_user');
+    ug.addActiveQuery();
+    ug.addNotNullQuery('email');
+    ug.orderBy('name');
+    ug.setLimit(2000);
+    ug.query();
+    while (ug.next()) {
+        var sid = ug.getUniqueValue();
+        if (!_allowed[sid]) { continue; }                        // only analyst/manager role-holders show
+        var unm = ug.getValue('name') || ug.getValue('email');   // fall back to email if no display name
+        if (!unm) { continue; }
+        data.users.push({ id: sid, name: unm, email: (ug.getValue('email') || '') });
+    }
+
+    function fieldCount(json) {
+        try { var a = JSON.parse(json || '[]'); return a.length; } catch (e) { return 0; }
+    }
+    function assignedList(json) {
+        try { return JSON.parse(json || '[]'); } catch (e) { return []; }
+    }
+
+    data.published = [];
+    data.drafts = [];
+    data.allWizards = [];
+    var gr = new GlideRecord('x_nose_nfotc_bsm_wizard');
+    gr.orderByDesc('sys_updated_on');
+    gr.query();
+    while (gr.next()) {
+        var cardActivity = gr.getValue('activity') || 'Compare & Match';
+        var cardWd = gr.getValue('work_driver') || '';
+        var rtc = cm.resolveTaxonomy(gr.getValue('bu') || '', gr.getValue('sub_bu') || '', gr.getValue('service') || '', cardWd);
+        var card = {
+            id: gr.getUniqueValue(),
+            name: gr.getValue('name') || 'Untitled wizard',
+            description: gr.getValue('description') || '',
+            bu: rtc.bu, subBu: rtc.subBu, service: rtc.service,
+            workDriver: cardWd,
+            activity: cardActivity,
+            inputFormat: gr.getValue('input_format') || 'Email',
+            ingestionType: gr.getValue('ingestion_type') || 'Mail',
+            frequency: gr.getValue('frequency') || 'Real-time',
+            source: gr.getValue('mailbox') || '',
+            mailbox: gr.getValue('mailbox') || '',
+            target: gr.getValue('target_system') || '',
+            version: gr.getValue('version') || 'v1',
+            fieldCount: fieldCount(gr.getValue('input_fields')),
+            status: gr.getValue('status') || 'draft'
+        };
+        var au = assignedList(gr.getValue('assigned_users'));
+        card.assigned = au.length;
+        card.assignedIds = au.map(function (u) { return u.id; });
+        data.allWizards.push({ id: card.id, name: card.name });
+        if (card.status === 'published') { data.published.push(card); } else { data.drafts.push(card); }
+    }
+
+    // Filter option lists (chips).
+    data.workDrivers = ['Non Pari-ff Prematching', 'OTC Settlements', 'Position Management / Depot Transfer'];
+    data.activities = ['Compare & Match', 'Reconcile', 'Validate'];
+})();
