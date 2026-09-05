@@ -98,22 +98,15 @@
         }
     }
 
-    // Assignable people — ONLY users who hold this app's roles (analyst / manager), so the picker shows
-    // provisioned staff instead of the whole directory. To onboard a NEW analyst: grant them the
-    // x_nose_nfotc_bsm.analyst role (User Administration), then they appear here.
+    // Assignable people — the provisioned operator allow-list, from the x_nose_nfotc_bsm.demo_users
+    // property (comma-separated user_names). This shows exactly the onboarded people (same set as eval),
+    // not the whole directory. Reads only the property + sys_user (both readable in a user session), so it
+    // avoids the cross-scope role-table reads that a scoped user session blocks. To add a new analyst:
+    // add their user_name to x_nose_nfotc_bsm.demo_users (and grant them the analyst role).
     data.users = [];
-    var _roleIds = [];
-    var _rr = new GlideRecord('sys_user_role');
-    _rr.addQuery('name', 'IN', 'x_nose_nfotc_bsm.analyst,x_nose_nfotc_bsm.manager');
-    _rr.query();
-    while (_rr.next()) { _roleIds.push(_rr.getUniqueValue()); }
-    var _allowed = {};
-    if (_roleIds.length) {
-        var _uhr = new GlideRecord('sys_user_has_role');
-        _uhr.addQuery('role', 'IN', _roleIds.join(','));
-        _uhr.query();
-        while (_uhr.next()) { _allowed[_uhr.getValue('user')] = true; }
-    }
+    var _demoSet = {};
+    var _demo = ('' + (gs.getProperty('x_nose_nfotc_bsm.demo_users', '') || '')).split(',');
+    for (var _d = 0; _d < _demo.length; _d++) { var _k = ('' + _demo[_d]).trim().toLowerCase(); if (_k) { _demoSet[_k] = true; } }
     var ug = new GlideRecord('sys_user');
     ug.addActiveQuery();
     ug.addNotNullQuery('email');
@@ -121,11 +114,11 @@
     ug.setLimit(2000);
     ug.query();
     while (ug.next()) {
-        var sid = ug.getUniqueValue();
-        if (!_allowed[sid]) { continue; }                        // only analyst/manager role-holders show
+        var _un = ('' + (ug.getValue('user_name') || '')).toLowerCase();
+        if (!_demoSet[_un]) { continue; }                        // only provisioned operators (demo_users)
         var unm = ug.getValue('name') || ug.getValue('email');   // fall back to email if no display name
         if (!unm) { continue; }
-        data.users.push({ id: sid, name: unm, email: (ug.getValue('email') || '') });
+        data.users.push({ id: ug.getUniqueValue(), name: unm, email: (ug.getValue('email') || '') });
     }
 
     function fieldCount(json) {
